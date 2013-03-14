@@ -22,23 +22,22 @@ require 'yaml'
 require 'tmpdir'
 
 def indent(str)
-    str.split("\n").each do |line|
-        puts "       #{line}"
-    end
+  str.force_encoding("iso-8859-1").split("\n").each do |line|
+    puts "       #{line}"
+  end
 end
 
 def arrow(str)
-    str.split("\n").each do |line|
-        puts "-----> #{line}"
-    end
+  str.force_encoding("iso-8859-1").split("\n").each do |line|
+    puts "-----> #{line}"
+  end
 end
 
 def error(str)
-    str.split("\n").each do |line|
-        puts " !     #{line}"
-    end
+  str.force_encoding("iso-8859-1").split("\n").each do |line|
+    puts " !     #{line}"
+  end
 end
-
 
 build_dir = ARGV[0]
 cache_dir = ARGV[1]
@@ -46,88 +45,74 @@ cache_dir = ARGV[1]
 buildpacks_file = ENV.fetch("BUILDPACKS_FILE", ".buildpacks")
 
 release = {
-    "addons" => [],
-    "config_vars" => {},
-    "default_process_types" => {}
+  "addons" => [],
+  "config_vars" => {},
+  "default_process_types" => {}
 }
 
-
 File::open("#{build_dir}/#{buildpacks_file}", "r") do |buildpacks|
-    buildpacks.each do |buildpack|
-        Dir::mktmpdir "child_buildpack_" do |tmp_dir|
-            buildpack_dir = "#{tmp_dir}/buildpack"
+  buildpacks.each do |buildpack|
+    tmp_dir = `mktemp -t buildpackXXXX`.chomp
+    `rm -rf #{tmp_dir}`
+    buildpack_dir = tmp_dir
 
-            buildpack.chomp!
-            url, *extra = buildpack.split '#'
-            branch = extra.join
+    url = buildpack.split('#').first.chomp
 
-            if branch != ''
-                branch = "--branch #{branch}"
-            end
+    arrow "Fetching child buildpack - #{buildpack} to #{buildpack_dir}"
+    `git clone #{url} #{buildpack_dir} >/dev/null 2>&1`
 
-            arrow "Fetching child buildpack"
-            `git clone --depth 1 #{branch} #{url} #{buildpack_dir}`
+    Dir.chdir buildpack_dir
+    # TODO only if starts with #!
+    `chmod +x ./bin/detect`
+    `chmod +x ./bin/compile`
+    `chmod +x ./bin/release`
 
-            Dir::chdir buildpack_dir do
+    name = `./bin/detect #{ARGV[0]}`.chomp
+    arrow "#{name} app detected"
 
-                `chmod +x ./bin/detect`
-                `chmod +x ./bin/compile`
-                `chmod +x ./bin/release`
+    if $?.to_i != 0
+      error "buildpack retrieved  from #{buildpack} claimed not to apply to this app"
+      exit 1
+    else
+      # run the buildpack
+      arrow "Executing #{name} buildpack"
 
-                name = `./bin/detect #{ARGV[0]}`.chomp
-                arrow "#{name} app detected"
+      indent `./bin/compile #{build_dir} #{cache_dir} 2>&1`
 
-                if $?.to_i == 0
-                    # run the buildpack
-                    arrow "Executing #{name} buildpack"
+      if $?.to_i != 0
+        error "Child buildpack compile script failed"
+        exit 1
+      end
 
-                    indent `./bin/compile #{build_dir} #{cache_dir} 2>&1`
+      # update release info
+      tmp_release = File.read('./bin/release')
+      tmp_release = `./bin/release #{build_dir}` if tmp_release =~ /^#!/
 
-                    if $?.to_i != 0
-                        error "Child buildpack compile script failed"
-                        exit 1
-                    end
+      if $?.to_i != 0
+        error "Child buildpack release script failed"
+        exit 1
+      end
 
-                    # update release info
-                    tmp_release = File.read('./bin/release')
-                    tmp_release = `./bin/release #{build_dir}` if tmp_release =~ /^#!/
-
-                    if $?.to_i != 0
-                        error "Child buildpack release script failed"
-                        exit 1
-                    end
-
-                    if tmp_release = YAML::load(tmp_release)
-                        release["addons"].concat(
-                                    tmp_release.fetch("addons", []))
-
-                        release["default_process_types"].update(
-                                    tmp_release.fetch("default_process_types", {}))
-
-                        release["config_vars"].update(
-                                    tmp_release.fetch("config_vars", {}))
-
-                        release["config_vars"].each do |key,value|
-                            release["config_vars"][key] = String value
-                        end
-
-                        # Add new configuration variables to environment
-                        ENV.update(release["config_vars"])
-                    else
-                        error "No output from child release script.  Ignoring"
-                    end
-                else
-                    error "buildpack retrieved  from #{buildpack} claimed not to apply to this app"
-                    exit 1
-                end
-            end
+      tmp_release = YAML::load(tmp_release)
+      unless tmp_release
+        error("No output from child release script.  Ignoring")
+      else
+        release["addons"].concat(tmp_release.fetch("addons", []))
+        release["default_process_types"].update(tmp_release.fetch("default_process_types", {}))
+        release["config_vars"].update(tmp_release.fetch("config_vars", {}))
+        release["config_vars"].each do |key,value|
+            release["config_vars"][key] = String value
         end
+      end
     end
+  end
 end
 
 arrow "Writing release file"
 File.open("#{build_dir}/.heroku-buildpack-compose_release_info", "w") do |release_file|
-    release_file.syswrite(release.to_yaml)
+  release_file.syswrite(release.to_yaml)
 end
+
+File.read "#{build_dir}/.heroku-buildpack-compose_release_info"
 
 arrow "Completed succesfully"
