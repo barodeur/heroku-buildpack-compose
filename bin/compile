@@ -89,7 +89,8 @@ File::open("#{build_dir}/#{buildpacks_file}", "r") do |buildpacks|
                     end
 
                     # update release info
-                    tmp_release = `./bin/release #{build_dir}`
+                    tmp_release = File.read('./bin/release')
+                    tmp_release = `./bin/release #{build_dir}` if tmp_release =~ /^#!/
 
                     if $?.to_i != 0
                         error "Child buildpack release script failed"
